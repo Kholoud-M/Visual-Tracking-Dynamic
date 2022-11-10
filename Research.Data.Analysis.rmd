@@ -1,0 +1,4611 @@
+---
+title: Dynamics of Visual Attention
+author: "Kholoud Mohamed"
+output:
+  pdf_document:
+  latex_engine: xelatex
+---
+
+  
+  
+
+**Packages Needed for Analysis**
+  
+```{r}
+library(eyelinker)
+library(devtools)
+require(dplyr)
+require(tidyr)
+require(ggplot2)
+require(intervals)
+require(stringr)
+library(imager)
+
+
+
+
+memory.limit()
+memory.limit(size=56000)
+```
+
+Step 1
+**All particpant data**
+```{r}
+files <-list.files(pattern = "*.asc") 
+files
+
+str(files,max.level = 1)
+alldatafiles <-data.frame(files)
+alldatafiles
+```
+
+
+Step 2
+**Importing data for 1st particpant S1_101335**
+```{r}
+file1data <- read.asc("S1_101335.asc")
+file1data
+```
+
+
+Step 3
+**Structure of File1Data The first participant**
+
+```{r}
+str(file1data, max.level = 1)
+```
+
+Note:
+The value of the block column will be the index of the previous block plus 0.5 (e.g. 1.5 for a message event between blocks 1 and 2). You can use block %% 1 != 0 to select all out-of-block rows in a data frame, which can be useful if you want to make out-of-block events belong to the block before or after (or exclude them from further analysis):
+
+```{r}
+
+msgs <- file1data$msg
+
+in_block <- msgs$block %% 1 == 0
+
+# Make all out-of-block messages belong to the next block (e.g. 0.5 to 1)
+msgs[!in_block, ]$block <- msgs[!in_block, ]$block + 0.5
+
+
+# Drop all out-of-block messages from the data
+msgs <- msgs[!in_block, ]
+```
+
+
+Step 4
+**Tracker/File Info**
+```{r}
+dplyr::select(file1data$info, c(model, mount, sample.rate, cr))
+```
+The file is recorded at a sample rate of 500 Hz on a EyeLink 1000 Plus tracker in the desk-mounted, head-stabilized, monocular mount configuration. 
+
+```{r}
+dplyr::select(file1data$info, c(left, right, mono, screen.x, screen.y))
+```
+Only the right eye was tracked for this file. The resolution of the stimulus computer’s monitor was 1920x1080.
+
+
+```{r}
+dplyr::select(file1data$info, c(sample.dtype, event.dtype, pupil.dtype))
+```
+
+raw: Raw sample data
+sacc: Saccade end events
+fix: Fixation end events
+blinks: Blink end events
+msg:  Messages sent or received by the tracker
+input: Input port (TTL) events
+button: Button box / gamepad events
+info: Tracker settings/configuration metadata
+If the data was recorded in remote mode (i.e using a target sticker to track head movements), the sample data may also contain columns indicating the position (tx, ty), distance from camera (td)
+
+
+```{r}
+raw <- file1data$raw
+raw
+```
+The raw data for the monocular recording.
+
+
+Step 5
+**Tidying up raw data with tidyr**
+
+The eye variables are the same as before, but now they’re being reported for both eyes with a suffix indicating left/right (i.e. xpl is the x position of the left eye). Xy "the x position" and Yp "the y position" are combined into the coord column. The eye position is now in a single column rather than two, and the column “coord” tells us if the value corresponds to the X or Y position. Here its x.
+```{r}
+raw.long <- dplyr::select(raw, time, xp, yp, block) %>% tidyr::gather("coord", "pos", xp, yp)
+raw.long
+```
+
+
+Step 6
+
+** plotting The eye position  for the raw data of participant 1.
+
+```{r}
+raw.long <- mutate(raw.long, ts = (time - min(time)) / 1e3) # time in sec.
+ggplot(raw.long, aes(ts, pos, col = coord)) + geom_point()
+
+```
+
+Note:
+In the raw data files there are 5 recording session, it seemed that the code Removed 431034 rows containing missing values.
+
+
+
+
+plotting the eye position by blocks. participant 1 file contains six separate recording  period, each corresponding to different “blocks” in the ASC file S1_101335.asc, there is no data for block 6, could be the missing row(s)?
+
+```{r}
+ggplot(raw.long, aes(ts, pos, col = coord)) + geom_line() + facet_wrap(~block)
+```
+
+
+
+Step 7
+
+**Extracting SACCADES**
+
+```{r}
+sac <- file1data$sac
+sac
+```
+
+To see if the saccades have been labelled correctly, we’ll have to find the corresponding time samples in the raw data.
+
+The easiest way to achieve this is to view the detected saccades as a set of temporal intervals, with endpoints given by stime(Saccade start time(in msec) and etime(Saccade end time in msec). We’ll use the %In% function to check if each time point in the raw data can be found in one of these intervals.
+
+
+```{r}
+Sac <- cbind(sac$stime, sac$etime) # Define a set of intervals with these endpoints
+# See also: intervals package
+raw <- mutate(raw, saccade = time %In% Sac)
+raw
+```
+ 28% of time samples correspond to saccades
+```{r}
+mean(raw$saccade) * 100
+``` 
+
+
+Now each time point labelled with “saccade == TRUE” corresponds to a saccade detected by the eye tracker.
+plotting the  traces:
+
+```{r}
+mutate(raw.long, saccade = time %In% Sac) %>%
+  filter(block == 1) %>%
+  ggplot(aes(ts, pos, group = coord, col = saccade)) + geom_line()
+```
+ 
+
+Step 8
+**Extracting FIXATIONS**
+
+```{r}
+fix <- file1data$fix
+fix
+```
+
+**Labelling fixations in the raw traces**
+```{r}
+Fix <- cbind(fix$stime, fix$etime) # Define a set of intervals
+mutate(raw.long, fixation = time %In% Fix) %>%
+  filter(block == 1) %>%
+  ggplot(aes(ts, pos, group = coord, col = fixation)) + geom_line()
+```
+
+We can get a fixation index using whichInterval:
+```{r}
+mutate(raw, fix.index = whichInterval(time, Fix))
+```
+
+
+To check if the average x and y positions are correct:
+```{r}
+raw <- mutate(raw, fix.index = whichInterval(time, Fix))
+fix.check <- filter(raw, !is.na(fix.index)) %>%
+  group_by(fix.index) %>%
+  summarise(axp = mean(xp), ayp = mean(yp)) %>%
+  ungroup
+fix.check
+```
+
+
+
+Next, grouping all time samples according to fixation index, and computing mean x and y positions, to verify that we recovered the right values:
+
+```{r}
+all.equal(fix.check$axp, fix$axp)
+all.equal(fix.check$ayp, fix$ayp)
+
+```
+
+
+Step 9
+**Extracting BLINKS**
+
+
+```{r}
+file1data$blinks
+```
+
+labelling the blinks
+```{r}
+Blk <- cbind(file1data$blinks$stime, file1data$blinks$etime) # Define a set of intervals
+
+head(filter(file1data$raw, time %In% Blk))
+
+```
+During blinks, eye position data is unavailable. Unfortunately, it takes the eye tracker a bit of time to detect blinks, and the eye position data around blinks may be suspect. The EyeLink manual suggests that getting rid of samples that are within 100 ms of a blink should eliminate most problems. We’ll use some functions from the intervals package to expand our blinks by 100 ms:
+
+```{r}
+Suspect <-Intervals(Blk) %>% expand(100, "absolute")
+Suspect
+```
+
+A trace around a blink
+
+```{r}
+raw.long <- dplyr::select(file1data$raw, time, xp, yp, block) %>%
+  gather("coord", "pos", xp, yp)
+raw.long <- mutate(raw.long, ts = (time - min(time)) / 1e3) # time in sec.
+ex <- mutate(raw.long, suspect = time %In% Suspect) %>%
+  filter(block == 2)
+
+ggplot(ex, aes(ts, pos, group = coord, col = suspect)) +
+  geom_line() +
+  coord_cartesian(xlim = c(34, 40)) +
+  labs(x = "Time (s)")
+```
+
+Step 10
+**Extracting Messages**
+
+```{r}
+file1data$msg
+```
+
+Step 11
+**Plotting the pattern of Fixation & Saccades on each block**
+
+What if we want to look at the pattern of fixations or saccades on a given block? We can accomplish this with ggplot2 using a couple tweaks. Importantly, we’ll need to reverse the y-axis using scale_y_reverse() since the coordinates (0,0) correspond to the top-left of the screen in the data and not the bottom-left. Additionally, we’ll want to set the scales of the X and Y axes to correspond to the screen resolution specified by screen.x and screen.y in the $info table (1024 x 768, in this case), and optionally set coord_fixed() to ensure the aspect ratio of the plot doesn’t get stretched.
+
+For this example, we’ll plot saccades with geom_segment() and fixations using geom_point(). Additionally, we’ll make the size of the fixation points vary based on the duration of the fixation by setting size = dur in the aes() settings for geom_point():
+```{r}
+# Get fixations/saccades for 1st block
+fix_b1 <- subset(file1data$fix,block == 1)
+sacc_b1 <- subset(file1data$sacc,block == 1)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file1data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file1data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 1") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+```
+
+```{r}
+# Get fixations/saccades for 2nd block
+fix_b1 <- subset(file1data$fix,block == 2)
+sacc_b1 <- subset(file1data$sacc,block == 2)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file1data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file1data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 2") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+```
+
+
+```{r}
+# Get fixations/saccades for 3rd block
+fix_b1 <- subset(file1data$fix,block == 3)
+sacc_b1 <- subset(file1data$sacc,block == 3)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file1data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file1data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 3") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+```
+
+
+```{r}
+# Get fixations/saccades for 4th block
+fix_b1 <- subset(file1data$fix,block == 4)
+sacc_b1 <- subset(file1data$sacc,block == 4)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file1data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file1data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",
+       title="pattern of Fixation & Saccades for block 4") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+```
+```{r}
+# Get fixations/saccades for 5th block
+fix_b1 <- subset(file1data$fix,block == 5)
+sacc_b1 <- subset(file1data$sacc,block == 5)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file1data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file1data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 5") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+```
+
+
+```{r}
+# Get fixations/saccades for 6th block
+fix_b1 <- subset(file1data$fix,block == 6)
+sacc_b1 <- subset(file1data$sacc,block == 6)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file1data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file1data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 6") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+```
+
+
+
+
+**Plotting of raw gazes for each block**
+
+```{r}
+raw_b1 <- subset(file1data$raw, block == 1)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file1data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file1data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 1") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+```
+
+```{r}
+raw_b1 <- subset(file1data$raw, block == 2)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file1data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file1data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 2") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+```
+
+
+```{r}
+raw_b1 <- subset(file1data$raw, block == 3)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file1data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file1data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 3") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+```
+
+
+
+
+```{r}
+raw_b1 <- subset(file1data$raw, block == 4)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file1data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file1data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 4") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+```
+```{r}
+raw_b1 <- subset(file1data$raw, block == 5)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file1data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file1data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 5") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+```
+
+```{r}
+raw_b1 <- subset(file1data$raw, block == 6)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file1data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file1data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 6") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+```
+
+
+
+
+```{r}
+file1data$msg$text
+```
+
+
+
+
+```{r}
+filter(file1data$msg, str_detect(text, "0214"))
+```
+
+
+
+
+**Participant 3 Data**
+
+```{r}
+file3data <- read.asc("S3_97552.asc")
+file3data
+
+```
+
+````{r}
+str(file3data, max.level = 1)
+dplyr::select(file3data$info, c(left, right, mono, screen.x, screen.y))
+
+
+raw3 <- file3data$raw
+raw3
+
+raw3.long <- dplyr::select(raw3, time, xp, yp, block) %>% tidyr::gather("coord", "pos", xp, yp)
+raw3.long
+
+raw3.long <- mutate(raw3.long, ts = (time - min(time)) / 1e3) # time in sec.
+ggplot(raw3.long, aes(ts, pos, col = coord)) + geom_point()
+
+ggplot(raw3.long, aes(ts, pos, col = coord)) + geom_line() + facet_wrap(~block)
+
+sac3 <- file3data$sac
+sac3
+
+Sac3 <- cbind(sac3$stime, sac3$etime) # Define a set of intervals with these endpoints
+# See also: intervals package
+raw3 <- mutate(raw3, saccade = time %In% Sac3)
+raw3
+
+mean(raw3$saccade) * 100
+
+mutate(raw3.long, saccade = time %In% Sac3) %>%
+  filter(block == 1) %>%
+  ggplot(aes(ts, pos, group = coord, col = saccade)) + geom_line()
+
+fix3 <- file3data$fix
+fix3
+
+
+Fix3 <- cbind(fix3$stime, fix3$etime) # Define a set of intervals
+mutate(raw3.long, fixation = time %In% Fix3) %>%
+  filter(block == 1) %>%
+  ggplot(aes(ts, pos, group = coord, col = fixation)) + geom_line()
+
+mutate(raw3, fix.index = whichInterval(time, Fix3))
+
+
+raw3 <- mutate(raw3, fix.index = whichInterval(time, Fix3))
+fix.check <- filter(raw3, !is.na(fix.index)) %>%
+  group_by(fix.index) %>%
+  summarise(axp = mean(xp), ayp = mean(yp)) %>%
+  ungroup
+fix.check
+
+file3data$blinks
+
+Blk3 <- cbind(file3data$blinks$stime, file3data$blinks$etime) # Define a set of intervals
+
+head(filter(file3data$raw, time %In% Blk3))
+
+Suspect3 <-Intervals(Blk3) %>% expand(100, "absolute")
+
+raw3.long <- dplyr::select(file3data$raw, time, xp, yp, block) %>%
+  gather("coord", "pos", xp, yp)
+raw3.long <- mutate(raw3.long, ts = (time - min(time)) / 1e3) # time in sec.
+ex <- mutate(raw3.long, suspect = time %In% Suspect3) %>%
+  filter(block == 2)
+
+ggplot(ex, aes(ts, pos, group = coord, col = suspect)) +
+  geom_line() +
+  coord_cartesian(xlim = c(34, 40)) +
+  labs(x = "Time (s)")
+
+file3data$msg
+
+# Get fixations/saccades for 1st block
+fix_b1 <- subset(file3data$fix,block == 1)
+sacc_b1 <- subset(file3data$sacc,block == 1)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file3data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file3data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 1") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+# Get fixations/saccades for 2nd block
+fix_b1 <- subset(file3data$fix,block == 2)
+sacc_b1 <- subset(file3data$sacc,block == 2)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file3data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file3data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 2") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+# Get fixations/saccades for 3rd block
+fix_b1 <- subset(file3data$fix,block == 3)
+sacc_b1 <- subset(file3data$sacc,block == 3)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file3data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file3data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 3") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+# Get fixations/saccades for 4th block
+fix_b1 <- subset(file3data$fix,block == 4)
+sacc_b1 <- subset(file3data$sacc,block == 4)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file3data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file3data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 4") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+# Get fixations/saccades for 5th block
+fix_b1 <- subset(file3data$fix,block == 5)
+sacc_b1 <- subset(file3data$sacc,block == 5)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file3data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file3data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 5") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+# Get fixations/saccades for 6th block
+fix_b1 <- subset(file3data$fix,block == 6)
+sacc_b1 <- subset(file3data$sacc,block == 6)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file3data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file3data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 6") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+raw_b1 <- subset(file3data$raw, block == 1)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file3data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file3data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 1") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+raw_b1 <- subset(file3data$raw, block == 2)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file3data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file3data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 2") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+raw_b1 <- subset(file3data$raw, block == 3)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file3data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file3data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 3") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+raw_b1 <- subset(file3data$raw, block == 4)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file3data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file3data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 4") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+raw_b1 <- subset(file3data$raw, block == 5)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file3data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file3data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 5") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+raw_b1 <- subset(file3data$raw, block == 6)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file3data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file3data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 6") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+
+
+```
+
+
+
+**Participant 4 Data**
+```{r}
+
+file4data <- read.asc("S4_103489.asc")
+file4data
+
+
+str(file4data, max.level = 1)
+
+dplyr::select(file4data$info, c(left, right, mono, screen.x, screen.y))
+
+
+raw4 <- file4data$raw
+raw4.long <- dplyr::select(raw4, time, xp, yp, block) %>% tidyr::gather("coord", "pos", xp, yp)
+
+raw4.long <- mutate(raw4.long, ts = (time - min(time)) / 1e3) # time in sec.
+ggplot(raw4.long, aes(ts, pos, col = coord)) + geom_point()
+
+ggplot(raw4.long, aes(ts, pos, col = coord)) + geom_line() + facet_wrap(~block)
+
+sac4 <- file4data$sac
+sac4
+Sac4 <- cbind(sac4$stime, sac4$etime) # Define a set of intervals with these endpoints
+# See also: intervals package
+raw4 <- mutate(raw4, saccade = time %In% Sac4)
+
+mean(raw4$saccade) * 100
+
+mutate(raw4.long, saccade = time %In% Sac4) %>%
+  filter(block == 1) %>%
+  ggplot(aes(ts, pos, group = coord, col = saccade)) + geom_line()
+
+fix4 <- file4data$fix
+
+Fix4 <- cbind(fix4$stime, fix4$etime) # Define a set of intervals
+mutate(raw4.long, fixation = time %In% Fix4) %>%
+  filter(block == 1) %>%
+  ggplot(aes(ts, pos, group = coord, col = fixation)) + geom_line()
+
+
+
+mutate(raw4, fix.index = whichInterval(time, Fix4))
+
+
+raw4 <- mutate(raw4, fix.index = whichInterval(time, Fix4))
+fix.check <- filter(raw4, !is.na(fix.index)) %>%
+  group_by(fix.index) %>%
+  summarise(axp = mean(xp), ayp = mean(yp)) %>%
+  ungroup
+fix.check
+
+
+file4data$blinks
+Blk4 <- cbind(file4data$blinks$stime, file4data$blinks$etime) # Define a set of intervals
+
+head(filter(file4data$raw, time %In% Blk4))
+
+
+Suspect4 <-Intervals(Blk4) %>% expand(100, "absolute")
+
+raw4.long <- dplyr::select(file4data$raw, time, xp, yp, block) %>%
+  gather("coord", "pos", xp, yp)
+raw4.long <- mutate(raw4.long, ts = (time - min(time)) / 1e3) # time in sec.
+ex <- mutate(raw4.long, suspect = time %In% Suspect4) %>%
+  filter(block == 2)
+
+ggplot(ex, aes(ts, pos, group = coord, col = suspect)) +
+  geom_line() +
+  coord_cartesian(xlim = c(34, 40)) +
+  labs(x = "Time (s)")
+
+
+file4data$msg
+
+
+# Get fixations/saccades for 1st block
+fix_b1 <- subset(file4data$fix,block == 1)
+sacc_b1 <- subset(file4data$sacc,block == 1)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file4data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file4data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 1") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+# Get fixations/saccades for 2nd block
+fix_b1 <- subset(file4data$fix,block == 2)
+sacc_b1 <- subset(file4data$sacc,block == 2)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file4data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file4data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 2") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+# Get fixations/saccades for 3rd block
+fix_b1 <- subset(file4data$fix,block == 3)
+sacc_b1 <- subset(file4data$sacc,block == 3)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file4data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file4data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 3") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+# Get fixations/saccades for 4th block
+fix_b1 <- subset(file4data$fix,block == 4)
+sacc_b1 <- subset(file4data$sacc,block == 4)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file4data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file4data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 4") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+# Get fixations/saccades for 5th block
+fix_b1 <- subset(file4data$fix,block == 5)
+sacc_b1 <- subset(file4data$sacc,block == 5)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file4data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file4data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 5") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+# Get fixations/saccades for 6th block
+fix_b1 <- subset(file4data$fix,block == 6)
+sacc_b1 <- subset(file4data$sacc,block == 6)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file4data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file4data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 6") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+# Get fixations/saccades for 7th block
+fix_b1 <- subset(file4data$fix,block == 7)
+sacc_b1 <- subset(file4data$sacc,block == 7)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file4data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file4data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 7") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+#Plotting of raw gazes for each block#
+
+raw_b1 <- subset(file4data$raw, block == 1)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file4data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file4data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 1") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+raw_b1 <- subset(file4data$raw, block == 2)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file4data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file4data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 2") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+raw_b1 <- subset(file4data$raw, block == 3)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file4data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file4data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 3") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+raw_b1 <- subset(file4data$raw, block == 4)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file4data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file4data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 4") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+raw_b1 <- subset(file4data$raw, block == 5)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file4data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file4data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 5") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+raw_b1 <- subset(file4data$raw, block == 6)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file4data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file4data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 6") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+
+raw_b1 <- subset(file4data$raw, block == 7)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file4data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file4data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 7") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+```
+
+
+
+**Participant 6 Data**
+```{r}
+files <-list.files(pattern = "*.asc") 
+files
+
+str(files,max.level = 1)
+alldatafiles <-data.frame(files)
+alldatafiles
+
+file6data <- read.asc("S6_94789.asc")
+file6data
+
+
+str(file6data, max.level = 1)
+
+
+dplyr::select(file6data$info, c(left, right, mono, screen.x, screen.y))
+
+
+raw6 <- file6data$raw
+raw6
+
+
+raw6.long <- dplyr::select(raw6, time, xp, yp, block) %>% tidyr::gather("coord", "pos", xp, yp)
+raw6.long
+
+
+raw6.long <- mutate(raw6.long, ts = (time - min(time)) / 1e3) # time in sec.
+ggplot(raw6.long, aes(ts, pos, col = coord)) + geom_point()
+
+ggplot(raw6.long, aes(ts, pos, col = coord)) + geom_line() + facet_wrap(~block)
+
+sac6 <- file6data$sac
+sac6
+
+
+Sac6 <- cbind(sac6$stime, sac6$etime) # Define a set of intervals with these endpoints
+# See also: intervals package
+raw6 <- mutate(raw6, saccade = time %In% Sac6)
+raw6
+
+mean(raw6$saccade) * 100
+
+
+mutate(raw6.long, saccade = time %In% Sac6) %>%
+  filter(block == 1) %>%
+  ggplot(aes(ts, pos, group = coord, col = saccade)) + geom_line()
+
+fix6 <- file6data$fix
+fix6
+
+Fix6 <- cbind(fix6$stime, fix6$etime) # Define a set of intervals
+mutate(raw6.long, fixation = time %In% Fix6) %>%
+  filter(block == 1) %>%
+  ggplot(aes(ts, pos, group = coord, col = fixation)) + geom_line()
+
+
+
+
+mutate(raw6, fix.index = whichInterval(time, Fix6))
+
+raw6 <- mutate(raw6, fix.index = whichInterval(time, Fix6))
+fix.check <- filter(raw6, !is.na(fix.index)) %>%
+  group_by(fix.index) %>%
+  summarise(axp = mean(xp), ayp = mean(yp)) %>%
+  ungroup
+fix.check
+
+file6data$blinks
+Blk6 <- cbind(file6data$blinks$stime, file6data$blinks$etime) # Define a set of intervals
+
+head(filter(file6data$raw, time %In% Blk6))
+
+Suspect6 <-Intervals(Blk6) %>% expand(100, "absolute")
+Suspect6
+
+
+raw6.long <- dplyr::select(file6data$raw, time, xp, yp, block) %>%
+  gather("coord", "pos", xp, yp)
+raw6.long <- mutate(raw6.long, ts = (time - min(time)) / 1e3) # time in sec.
+ex <- mutate(raw6.long, suspect = time %In% Suspect6) %>%
+  filter(block == 2)
+
+ggplot(ex, aes(ts, pos, group = coord, col = suspect)) +
+  geom_line() +
+  coord_cartesian(xlim = c(34, 40)) +
+  labs(x = "Time (s)")
+
+
+
+file6data$msg
+
+# Get fixations/saccades for 1st block
+fix_b1 <- subset(file6data$fix,block == 1)
+sacc_b1 <- subset(file6data$sacc,block == 1)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file6data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file6data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 1") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+# Get fixations/saccades for 2nd block
+fix_b1 <- subset(file6data$fix,block == 2)
+sacc_b1 <- subset(file6data$sacc,block == 2)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file6data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file6data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 2") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+# Get fixations/saccades for 3rd block
+fix_b1 <- subset(file6data$fix,block == 3)
+sacc_b1 <- subset(file6data$sacc,block == 3)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file6data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file6data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 3") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+# Get fixations/saccades for 4th block
+fix_b1 <- subset(file6data$fix,block == 4)
+sacc_b1 <- subset(file6data$sacc,block == 4)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file6data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file6data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 4") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+
+# Get fixations/saccades for 5th block
+fix_b1 <- subset(file6data$fix,block == 5)
+sacc_b1 <- subset(file6data$sacc,block == 5)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file6data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file6data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 5") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+# Get fixations/saccades for 6th block
+fix_b1 <- subset(file6data$fix,block == 6)
+sacc_b1 <- subset(file6data$sacc,block == 6)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file6data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file6data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 6") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+# Get fixations/saccades for 7th block
+fix_b1 <- subset(file6data$fix,block == 7)
+sacc_b1 <- subset(file6data$sacc,block == 7)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file6data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file6data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 7") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+# Get fixations/saccades for 8th block
+fix_b1 <- subset(file6data$fix,block == 8)
+sacc_b1 <- subset(file6data$sacc,block == 8)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file6data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file6data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 8") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+#Plotting of raw gazes for each block
+
+
+raw_b1 <- subset(file6data$raw, block == 1)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file6data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file6data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 1") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+raw_b1 <- subset(file6data$raw, block == 2)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file6data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file6data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 2") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+raw_b1 <- subset(file6data$raw, block == 3)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file6data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file6data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 3") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+raw_b1 <- subset(file6data$raw, block == 4)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file6data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file6data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 4") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+raw_b1 <- subset(file6data$raw, block == 5)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file6data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file6data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 5") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+raw_b1 <- subset(file6data$raw, block == 6)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file6data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file6data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 6") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+raw_b1 <- subset(file6data$raw, block == 7)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file6data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file6data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 7") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+raw_b1 <- subset(file6data$raw, block == 8)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file6data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file6data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 8") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+```
+
+
+**Participant 7 Data**
+```{r}
+file7data <- read.asc("S7_97984.asc")
+file7data
+
+
+str(file7data, max.level = 1)
+
+
+dplyr::select(file7data$info, c(left, right, mono, screen.x, screen.y))
+
+
+raw7 <- file7data$raw
+
+
+
+raw7.long <- dplyr::select(raw7, time, xp, yp, block) %>% tidyr::gather("coord", "pos", xp, yp)
+
+raw7.long <- mutate(raw7.long, ts = (time - min(time)) / 1e3) # time in sec.
+ggplot(raw7.long, aes(ts, pos, col = coord)) + geom_point()
+
+ggplot(raw7.long, aes(ts, pos, col = coord)) + geom_line() + facet_wrap(~block)
+
+sac7 <- file7data$sac
+sac7
+Sac7 <- cbind(sac7$stime, sac7$etime) # Define a set of intervals with these endpoints
+# See also: intervals package
+raw7 <- mutate(raw7, saccade = time %In% Sac7)
+raw7
+mean(raw7$saccade) * 100
+
+
+mutate(raw7.long, saccade = time %In% Sac7) %>%
+  filter(block == 1) %>%
+  ggplot(aes(ts, pos, group = coord, col = saccade)) + geom_line()
+
+
+
+fix7 <- file7data$fix
+fix7
+
+Fix7 <- cbind(fix7$stime, fix7$etime) # Define a set of intervals
+mutate(raw7.long, fixation = time %In% Fix7) %>%
+  filter(block == 1) %>%
+  ggplot(aes(ts, pos, group = coord, col = fixation)) + geom_line()
+
+
+
+mutate(raw7, fix.index = whichInterval(time, Fix7))
+
+raw7 <- mutate(raw7, fix.index = whichInterval(time, Fix7))
+fix.check <- filter(raw7, !is.na(fix.index)) %>%
+  group_by(fix.index) %>%
+  summarise(axp = mean(xp), ayp = mean(yp)) %>%
+  ungroup
+fix.check
+
+
+file7data$blinks
+Blk7 <- cbind(file7data$blinks$stime, file7data$blinks$etime) # Define a set of intervals
+
+head(filter(file7data$raw, time %In% Blk7))
+Suspect7 <-Intervals(Blk7) %>% expand(100, "absolute")
+
+#A trace around a blink
+
+raw7.long <- dplyr::select(file7data$raw, time, xp, yp, block) %>%
+  gather("coord", "pos", xp, yp)
+raw7.long <- mutate(raw7.long, ts = (time - min(time)) / 1e3) # time in sec.
+ex <- mutate(raw7.long, suspect = time %In% Suspect7) %>%
+  filter(block == 2)
+
+ggplot(ex, aes(ts, pos, group = coord, col = suspect)) +
+  geom_line() +
+  coord_cartesian(xlim = c(34, 40)) +
+  labs(x = "Time (s)")
+
+
+file7data$msg
+
+
+
+# Get fixations/saccades for 1st block
+fix_b1 <- subset(file7data$fix,block == 1)
+sacc_b1 <- subset(file7data$sacc,block == 1)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file7data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file7data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 1") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+# Get fixations/saccades for 2nd block
+fix_b1 <- subset(file7data$fix,block == 2)
+sacc_b1 <- subset(file7data$sacc,block == 2)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file7data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file7data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 2") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+# Get fixations/saccades for 3rd block
+fix_b1 <- subset(file7data$fix,block == 3)
+sacc_b1 <- subset(file7data$sacc,block == 3)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file7data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file7data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 3") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+# Get fixations/saccades for 4th block
+fix_b1 <- subset(file7data$fix,block == 4)
+sacc_b1 <- subset(file7data$sacc,block == 4)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file7data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file7data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 4") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+# Get fixations/saccades for 5th block
+fix_b1 <- subset(file7data$fix,block == 5)
+sacc_b1 <- subset(file7data$sacc,block == 5)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file7data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file7data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 5") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+
+
+
+# Get fixations/saccades for 6th block
+fix_b1 <- subset(file7data$fix,block == 6)
+sacc_b1 <- subset(file7data$sacc,block == 6)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file7data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file7data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 6") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+raw_b1 <- subset(file7data$raw, block == 1)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file7data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file7data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 1") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+raw_b1 <- subset(file7data$raw, block == 2)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file7data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file7data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 2") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+raw_b1 <- subset(file7data$raw, block == 3)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file7data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file7data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 3") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+raw_b1 <- subset(file7data$raw, block == 4)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file7data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file7data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 4") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+
+raw_b1 <- subset(file7data$raw, block == 5)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file7data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file7data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 5") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+raw_b1 <- subset(file7data$raw, block == 6)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file7data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file7data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 6") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+```
+
+
+
+**participant 8 Data**
+```{r}
+file8data <- read.asc("S8_103531.asc")
+file8data
+
+
+str(file8data, max.level = 1)
+dplyr::select(file8data$info, c(left, right, mono, screen.x, screen.y))
+
+
+raw8 <- file8data$raw
+raw8
+
+
+raw8.long <- dplyr::select(raw8, time, xp, yp, block) %>% tidyr::gather("coord", "pos", xp, yp)
+raw8.long
+
+raw8.long <- mutate(raw8.long, ts = (time - min(time)) / 1e3) # time in sec.
+ggplot(raw8.long, aes(ts, pos, col = coord)) + geom_point()
+
+ggplot(raw8.long, aes(ts, pos, col = coord)) + geom_line() + facet_wrap(~block)
+
+sac8 <- file8data$sac
+sac8
+Sac8 <- cbind(sac8$stime, sac8$etime) # Define a set of intervals with these endpoints
+# See also: intervals package
+raw8 <- mutate(raw8, saccade = time %In% Sac8)
+raw8
+mean(raw8$saccade) * 100
+
+
+mutate(raw8.long, saccade = time %In% Sac8) %>%
+  filter(block == 1) %>%
+  ggplot(aes(ts, pos, group = coord, col = saccade)) + geom_line()
+
+
+#Extracting Fixations for S8----
+
+fix8 <- file8data$fix
+fix8
+
+Fix8 <- cbind(fix8$stime, fix8$etime) # Define a set of intervals
+mutate(raw8.long, fixation = time %In% Fix8) %>%
+  filter(block == 1) %>%
+  ggplot(aes(ts, pos, group = coord, col = fixation)) + geom_line()
+
+
+
+mutate(raw8, fix.index = whichInterval(time, Fix8))
+
+raw8 <- mutate(raw8, fix.index = whichInterval(time, Fix8))
+fix.check <- filter(raw8, !is.na(fix.index)) %>%
+  group_by(fix.index) %>%
+  summarise(axp = mean(xp), ayp = mean(yp)) %>%
+  ungroup
+fix.check
+
+
+
+
+
+
+#**Extracting BLINKS** for S8
+
+file8data$blinks
+Blk8 <- cbind(file8data$blinks$stime, file8data$blinks$etime) # Define a set of intervals
+
+head(filter(file8data$raw, time %In% Blk8))
+Suspect8 <-Intervals(Blk8) %>% expand(100, "absolute")
+
+#A trace around a blink
+
+raw8.long <- dplyr::select(file8data$raw, time, xp, yp, block) %>%
+  gather("coord", "pos", xp, yp)
+raw8.long <- mutate(raw8.long, ts = (time - min(time)) / 1e3) # time in sec.
+ex <- mutate(raw8.long, suspect = time %In% Suspect8) %>%
+  filter(block == 2)
+
+ggplot(ex, aes(ts, pos, group = coord, col = suspect)) +
+  geom_line() +
+  coord_cartesian(xlim = c(34, 40)) +
+  labs(x = "Time (s)")
+
+
+
+#**extracting messages for S8----
+
+file8data$msg
+
+#Plotting the pattern of Fixation & Saccades on each block
+
+# Get fixations/saccades for 1st block
+fix_b1 <- subset(file8data$fix,block == 1)
+sacc_b1 <- subset(file8data$sacc,block == 1)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file8data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file8data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 1") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+# Get fixations/saccades for 2nd block
+fix_b1 <- subset(file8data$fix,block == 2)
+sacc_b1 <- subset(file8data$sacc,block == 2)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file8data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file8data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 2") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+# Get fixations/saccades for 3rd block
+fix_b1 <- subset(file8data$fix,block == 3)
+sacc_b1 <- subset(file8data$sacc,block == 3)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file8data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file8data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 3") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+# Get fixations/saccades for 4th block
+fix_b1 <- subset(file8data$fix,block == 4)
+sacc_b1 <- subset(file8data$sacc,block == 4)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file8data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file8data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 4") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+# Get fixations/saccades for 5th block
+fix_b1 <- subset(file8data$fix,block == 5)
+sacc_b1 <- subset(file8data$sacc,block == 5)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file8data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file8data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 5") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+
+
+
+# Get fixations/saccades for 6th block
+fix_b1 <- subset(file8data$fix,block == 6)
+sacc_b1 <- subset(file8data$sacc,block == 6)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file8data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file8data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 6") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+# Get fixations/saccades for 7th block
+fix_b1 <- subset(file8data$fix,block == 7)
+sacc_b1 <- subset(file8data$sacc,block == 7)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file8data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file8data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 7") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+#**Plotting of raw gazes for each block**----
+
+raw_b1 <- subset(file8data$raw, block == 1)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file8data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file8data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 1") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+raw_b1 <- subset(file8data$raw, block == 2)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file8data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file8data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 2") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+raw_b1 <- subset(file8data$raw, block == 3)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file8data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file8data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 3") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+raw_b1 <- subset(file8data$raw, block == 4)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file8data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file8data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 4") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+
+raw_b1 <- subset(file8data$raw, block == 5)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file8data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file8data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 5") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+raw_b1 <- subset(file8data$raw, block == 6)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file8data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file8data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 6") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+raw_b1 <- subset(file8data$raw, block == 7)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file8data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file8data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 7") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+```
+
+
+
+**participant 9 Data**
+
+```{r}
+
+file9data <- read.asc("S9_104446.asc")
+file9data
+str(file9data, max.level = 1)
+
+dplyr::select(file9data$info, c(left, right, mono, screen.x, screen.y))
+
+
+raw9 <- file9data$raw
+raw9
+
+
+raw9.long <- dplyr::select(raw9, time, xp, yp, block) %>% tidyr::gather("coord", "pos", xp, yp)
+raw9.long
+
+raw9.long <- mutate(raw9.long, ts = (time - min(time)) / 1e3) # time in sec.
+ggplot(raw9.long, aes(ts, pos, col = coord)) + geom_point()
+
+ggplot(raw9.long, aes(ts, pos, col = coord)) + geom_line() + facet_wrap(~block)
+
+
+#saccades
+
+sac9 <- file9data$sac
+sac9
+Sac9 <- cbind(sac9$stime, sac9$etime) # Define a set of intervals with these endpoints
+# See also: intervals package
+raw9 <- mutate(raw9, saccade = time %In% Sac9)
+raw9
+mean(raw9$saccade) * 100
+
+
+mutate(raw9.long, saccade = time %In% Sac9) %>%
+  filter(block == 1) %>%
+  ggplot(aes(ts, pos, group = coord, col = saccade)) + geom_line()
+
+
+
+#**Extracting Fixations for S9**----
+fix9 <- file9data$fix
+fix9
+
+Fix9 <- cbind(fix9$stime, fix9$etime) # Define a set of intervals
+mutate(raw9.long, fixation = time %In% Fix9) %>%
+  filter(block == 1) %>%
+  ggplot(aes(ts, pos, group = coord, col = fixation)) + geom_line()
+
+
+
+mutate(raw9, fix.index = whichInterval(time, Fix9))
+
+raw9 <- mutate(raw9, fix.index = whichInterval(time, Fix9))
+fix.check <- filter(raw9, !is.na(fix.index)) %>%
+  group_by(fix.index) %>%
+  summarise(axp = mean(xp), ayp = mean(yp)) %>%
+  ungroup
+fix.check
+
+
+
+#**Extracting BLINKS**
+
+file9data$blinks
+Blk9 <- cbind(file9data$blinks$stime, file9data$blinks$etime) # Define a set of intervals
+
+head(filter(file9data$raw, time %In% Blk9))
+Suspect9 <-Intervals(Blk9) %>% expand(100, "absolute")
+
+#A trace around a blink
+
+raw9.long <- dplyr::select(file9data$raw, time, xp, yp, block) %>%
+  gather("coord", "pos", xp, yp)
+raw9.long <- mutate(raw9.long, ts = (time - min(time)) / 1e3) # time in sec.
+ex <- mutate(raw9.long, suspect = time %In% Suspect9) %>%
+  filter(block == 2)
+
+ggplot(ex, aes(ts, pos, group = coord, col = suspect)) +
+  geom_line() +
+  coord_cartesian(xlim = c(34, 40)) +
+  labs(x = "Time (s)")
+
+#**extracting messages**
+
+file9data$msg
+
+#**Plotting the pattern of Fixation & Saccades on each block**
+
+
+# Get fixations/saccades for 1st block
+fix_b1 <- subset(file9data$fix,block == 1)
+sacc_b1 <- subset(file9data$sacc,block == 1)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file9data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file9data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 1") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+# Get fixations/saccades for 2nd block
+fix_b1 <- subset(file9data$fix,block == 2)
+sacc_b1 <- subset(file9data$sacc,block == 2)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file9data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file9data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 2") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+# Get fixations/saccades for 3rd block
+fix_b1 <- subset(file9data$fix,block == 3)
+sacc_b1 <- subset(file9data$sacc,block == 3)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file9data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file9data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 3") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+# Get fixations/saccades for 4th block
+fix_b1 <- subset(file9data$fix,block == 4)
+sacc_b1 <- subset(file9data$sacc,block == 4)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file9data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file9data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 4") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+# Get fixations/saccades for 5th block
+fix_b1 <- subset(file9data$fix,block == 5)
+sacc_b1 <- subset(file9data$sacc,block == 5)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file9data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file9data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 5") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+
+
+
+# Get fixations/saccades for 6th block
+fix_b1 <- subset(file9data$fix,block == 6)
+sacc_b1 <- subset(file9data$sacc,block == 6)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file9data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file9data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 6") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+#**Plotting of raw gazes for each block**
+
+raw_b1 <- subset(file9data$raw, block == 1)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file9data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file9data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 1") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+raw_b1 <- subset(file9data$raw, block == 2)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file9data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file9data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 2") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+raw_b1 <- subset(file9data$raw, block == 3)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file9data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file9data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 3") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+raw_b1 <- subset(file9data$raw, block == 4)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file9data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file9data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 4") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+
+raw_b1 <- subset(file9data$raw, block == 5)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file9data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file9data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 5") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+raw_b1 <- subset(file9data$raw, block == 6)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file9data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file9data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 6") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+```
+
+
+**participant 11 Data**
+
+```{r}
+
+file11data <- read.asc("S11_107893.asc")
+file11data
+
+
+str(file11data, max.level = 1)
+
+dplyr::select(file11data$info, c(left, right, mono, screen.x, screen.y))
+
+
+raw11 <- file11data$raw
+raw11
+
+
+raw11.long <- dplyr::select(raw11, time, xp, yp, block) %>% tidyr::gather("coord", "pos", xp, yp)
+raw11.long
+
+
+raw11.long <- mutate(raw11.long, ts = (time - min(time)) / 1e3) # time in sec.
+ggplot(raw11.long, aes(ts, pos, col = coord)) + geom_point()
+
+ggplot(raw11.long, aes(ts, pos, col = coord)) + geom_line() + facet_wrap(~block)
+
+
+
+sac11 <- file11data$sac
+sac11
+Sac11 <- cbind(sac11$stime, sac11$etime) # Define a set of intervals with these endpoints
+# See also: intervals package
+raw11 <- mutate(raw11, saccade = time %In% Sac11)
+raw11
+mean(raw11$saccade) * 100
+
+
+mutate(raw11.long, saccade = time %In% Sac11) %>%
+  filter(block == 1) %>%
+  ggplot(aes(ts, pos, group = coord, col = saccade)) + geom_line()
+
+
+#**Extracting Fixations for S11**
+fix11 <- file11data$fix
+fix11
+
+Fix11 <- cbind(fix11$stime, fix11$etime) # Define a set of intervals
+mutate(raw11.long, fixation = time %In% Fix11) %>%
+  filter(block == 1) %>%
+  ggplot(aes(ts, pos, group = coord, col = fixation)) + geom_line()
+
+
+
+mutate(raw11, fix.index = whichInterval(time, Fix11))
+
+raw11 <- mutate(raw11, fix.index = whichInterval(time, Fix11))
+fix.check <- filter(raw11, !is.na(fix.index)) %>%
+  group_by(fix.index) %>%
+  summarise(axp = mean(xp), ayp = mean(yp)) %>%
+  ungroup
+fix.check
+
+#**Extracting BLINKS S11**---- 
+file11data$blinks
+Blk11 <- cbind(file11data$blinks$stime, file11data$blinks$etime) # Define a set of intervals
+
+head(filter(file11data$raw, time %In% Blk11))
+Suspect11 <-Intervals(Blk11) %>% expand(110, "absolute")
+
+#A trace around a blink
+
+raw11.long <- dplyr::select(file11data$raw, time, xp, yp, block) %>%
+  gather("coord", "pos", xp, yp)
+raw11.long <- mutate(raw11.long, ts = (time - min(time)) / 1e3) # time in sec.
+ex <- mutate(raw11.long, suspect = time %In% Suspect11) %>%
+  filter(block == 2)
+
+ggplot(ex, aes(ts, pos, group = coord, col = suspect)) +
+  geom_line() +
+  coord_cartesian(xlim = c(34, 40)) +
+  labs(x = "Time (s)")
+
+#**extracting messages S11**----- 
+file11data$msg
+
+#**Plotting the pattern of Fixation & Saccades on each block for S11**
+
+
+
+# Get fixations/saccades for 1st block
+fix_b1 <- subset(file11data$fix,block == 1)
+sacc_b1 <- subset(file11data$sacc,block == 1)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file11data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file11data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 1") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+# Get fixations/saccades for 2nd block
+fix_b1 <- subset(file11data$fix,block == 2)
+sacc_b1 <- subset(file11data$sacc,block == 2)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file11data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file11data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 2") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+# Get fixations/saccades for 3rd block
+fix_b1 <- subset(file11data$fix,block == 3)
+sacc_b1 <- subset(file11data$sacc,block == 3)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file11data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file11data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 3") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+# Get fixations/saccades for 4th block
+fix_b1 <- subset(file11data$fix,block == 4)
+sacc_b1 <- subset(file11data$sacc,block == 4)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file11data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file11data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 4") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+# Get fixations/saccades for 5th block
+fix_b1 <- subset(file11data$fix,block == 5)
+sacc_b1 <- subset(file11data$sacc,block == 5)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file11data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file11data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 5") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+#**Plotting of raw gazes for each block s11**----
+
+raw_b1 <- subset(file11data$raw, block == 1)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file11data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file11data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 1") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+raw_b1 <- subset(file11data$raw, block == 2)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file11data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file11data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 2") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+raw_b1 <- subset(file11data$raw, block == 3)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file11data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file11data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 3") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+raw_b1 <- subset(file11data$raw, block == 4)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file11data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file11data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 4") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+
+raw_b1 <- subset(file11data$raw, block == 5)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file11data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file11data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 5") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+
+```
+
+
+
+**participant 10 Data**
+
+```{r}
+
+file10data <- read.asc("S10_109690.asc")
+file10data
+
+
+str(file10data, max.level = 1)
+
+dplyr::select(file10data$info, c(left, right, mono, screen.x, screen.y))
+
+
+raw10 <- file10data$raw
+raw10
+
+
+raw10.long <- dplyr::select(raw10, time, xp, yp, block) %>% tidyr::gather("coord", "pos", xp, yp)
+raw10.long
+
+raw10.long <- mutate(raw10.long, ts = (time - min(time)) / 1e3) # time in sec.
+ggplot(raw10.long, aes(ts, pos, col = coord)) + geom_point()
+
+ggplot(raw10.long, aes(ts, pos, col = coord)) + geom_line() + facet_wrap(~block)
+
+
+
+sac10 <- file10data$sac
+sac10
+Sac10 <- cbind(sac10$stime, sac10$etime) # Define a set of intervals with these endpoints
+# See also: intervals package
+raw10 <- mutate(raw10, saccade = time %In% Sac10)
+raw10
+mean(raw10$saccade) * 100
+
+
+mutate(raw10.long, saccade = time %In% Sac10) %>%
+  filter(block == 1) %>%
+  ggplot(aes(ts, pos, group = coord, col = saccade)) + geom_line()
+
+
+
+
+##**Extracting Fixations for S10**
+
+fix10 <- file10data$fix
+fix10
+
+Fix10 <- cbind(fix10$stime, fix10$etime) # Define a set of intervals
+mutate(raw10.long, fixation = time %In% Fix10) %>%
+  filter(block == 1) %>%
+  ggplot(aes(ts, pos, group = coord, col = fixation)) + geom_line()
+
+
+
+mutate(raw10, fix.index = whichInterval(time, Fix10))
+
+raw10 <- mutate(raw10, fix.index = whichInterval(time, Fix10))
+fix.check <- filter(raw10, !is.na(fix.index)) %>%
+  group_by(fix.index) %>%
+  summarise(axp = mean(xp), ayp = mean(yp)) %>%
+  ungroup
+fix.check
+
+
+##**Extracting BLINKS**
+  
+  
+file10data$blinks
+Blk10 <- cbind(file10data$blinks$stime, file10data$blinks$etime) # Define a set of intervals
+
+head(filter(file10data$raw, time %In% Blk10))
+Suspect10 <-Intervals(Blk10) %>% expand(100, "absolute")
+
+#A trace around a blink
+
+raw10.long <- dplyr::select(file10data$raw, time, xp, yp, block) %>%
+  gather("coord", "pos", xp, yp)
+raw10.long <- mutate(raw10.long, ts = (time - min(time)) / 1e3) # time in sec.
+ex <- mutate(raw10.long, suspect = time %In% Suspect10) %>%
+  filter(block == 2)
+
+ggplot(ex, aes(ts, pos, group = coord, col = suspect)) +
+  geom_line() +
+  coord_cartesian(xlim = c(34, 40)) +
+  labs(x = "Time (s)")
+
+
+
+#Message S10
+
+file10data$msg
+
+
+
+#**Plotting the pattern of Fixation & Saccades on each block**
+  
+# Get fixations/saccades for 1st block
+fix_b1 <- subset(file10data$fix,block == 1)
+sacc_b1 <- subset(file10data$sacc,block == 1)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file10data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file10data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 1") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+# Get fixations/saccades for 2nd block
+fix_b1 <- subset(file10data$fix,block == 2)
+sacc_b1 <- subset(file10data$sacc,block == 2)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file10data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file10data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 2") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+# Get fixations/saccades for 3rd block
+fix_b1 <- subset(file10data$fix,block == 3)
+sacc_b1 <- subset(file10data$sacc,block == 3)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file10data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file10data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 3") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+# Get fixations/saccades for 4th block
+fix_b1 <- subset(file10data$fix,block == 4)
+sacc_b1 <- subset(file10data$sacc,block == 4)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file10data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file10data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 4") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+# Get fixations/saccades for 5th block
+fix_b1 <- subset(file10data$fix,block == 5)
+sacc_b1 <- subset(file10data$sacc,block == 5)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file10data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file10data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 5") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+#**Plotting of raw gazes for each block s10**
+
+
+
+raw_b1 <- subset(file10data$raw, block == 1)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file10data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file10data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 1") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+raw_b1 <- subset(file10data$raw, block == 2)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file10data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file10data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 2") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+raw_b1 <- subset(file10data$raw, block == 3)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file10data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file10data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 3") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+raw_b1 <- subset(file10data$raw, block == 4)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file10data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file10data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 4") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+
+raw_b1 <- subset(file10data$raw, block == 5)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file10data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file10data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 5") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+```
+
+
+**participant 12 Data**
+
+```{r}
+file12data <- read.asc("S12_105481.asc")
+file12data
+
+
+str(file12data, max.level = 1)
+dplyr::select(file12data$info, c(left, right, mono, screen.x, screen.y))
+
+
+raw12 <- file12data$raw
+raw12
+
+
+raw12.long <- dplyr::select(raw12, time, xp, yp, block) %>% tidyr::gather("coord", "pos", xp, yp)
+raw12.long
+
+raw12.long <- mutate(raw12.long, ts = (time - min(time)) / 1e3) # time in sec.
+ggplot(raw12.long, aes(ts, pos, col = coord)) + geom_point()
+
+ggplot(raw12.long, aes(ts, pos, col = coord)) + geom_line() + facet_wrap(~block)
+
+sac12 <- file12data$sac
+sac12
+
+Sac12 <- cbind(sac12$stime, sac12$etime) # Define a set of intervals with these endpoints
+# See also: intervals package
+raw12 <- mutate(raw12, saccade = time %In% Sac12)
+raw12
+
+mean(raw12$saccade) * 100
+mutate(raw12.long, saccade = time %In% Sac12) %>%
+  filter(block == 1) %>%
+  ggplot(aes(ts, pos, group = coord, col = saccade)) + geom_line()
+
+
+fix12 <- file12data$fix
+fix12
+
+Fix12 <- cbind(fix12$stime, fix12$etime) # Define a set of intervals
+mutate(raw12.long, fixation = time %In% Fix12) %>%
+  filter(block == 1) %>%
+  ggplot(aes(ts, pos, group = coord, col = fixation)) + geom_line()
+
+mutate(raw12, fix.index = whichInterval(time, Fix12))
+
+raw12 <- mutate(raw12, fix.index = whichInterval(time, Fix12))
+fix.check <- filter(raw12, !is.na(fix.index)) %>%
+  group_by(fix.index) %>%
+  summarise(axp = mean(xp), ayp = mean(yp)) %>%
+  ungroup
+fix.check
+
+
+file12data$blinks
+Blk12 <- cbind(file12data$blinks$stime, file12data$blinks$etime) # Define a set of intervals
+
+head(filter(file12data$raw, time %In% Blk12))
+
+
+
+
+file12data$msg
+
+
+
+
+# Get fixations/saccades for 1st block
+fix_b1 <- subset(file12data$fix,block == 1)
+sacc_b1 <- subset(file12data$sacc,block == 1)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file12data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file12data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 1") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+# Get fixations/saccades for 2nd block
+fix_b1 <- subset(file12data$fix,block == 2)
+sacc_b1 <- subset(file12data$sacc,block == 2)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file12data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file12data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 2") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+
+# Get fixations/saccades for 3rd block
+fix_b1 <- subset(file12data$fix,block == 3)
+sacc_b1 <- subset(file12data$sacc,block == 3)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file12data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file12data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 3") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+
+
+# Get fixations/saccades for 4th block
+fix_b1 <- subset(file12data$fix,block == 4)
+sacc_b1 <- subset(file12data$sacc,block == 4)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file12data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file12data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 4") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+# Get fixations/saccades for 5th block
+fix_b1 <- subset(file12data$fix,block == 5)
+sacc_b1 <- subset(file12data$sacc,block == 5)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file12data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file12data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 5") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+
+# Get fixations/saccades for 6th block
+fix_b1 <- subset(file12data$fix,block == 6)
+sacc_b1 <- subset(file12data$sacc,block == 6)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file12data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file12data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 6") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+
+raw_b1 <- subset(file12data$raw, block == 1)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file12data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file12data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 1") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+raw_b1 <- subset(file12data$raw, block == 2)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file12data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file12data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 2") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+raw_b1 <- subset(file12data$raw, block == 3)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file12data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file12data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 3") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+raw_b1 <- subset(file12data$raw, block == 4)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file12data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file12data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 4") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+raw_b1 <- subset(file12data$raw, block == 5)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file12data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file12data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 5") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+raw_b1 <- subset(file12data$raw, block == 6)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file12data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file12data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 6") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+```
+
+
+**participant 13 Data**
+
+```{r}
+file13data <- read.asc("S13_105712.asc")
+file13data
+
+
+str(file13data, max.level = 1)
+dplyr::select(file13data$info, c(left, right, mono, screen.x, screen.y))
+
+
+raw13 <- file13data$raw
+raw13
+
+
+raw13.long <- dplyr::select(raw13, time, xp, yp, block) %>% tidyr::gather("coord", "pos", xp, yp)
+raw13.long
+
+
+raw13.long <- mutate(raw13.long, ts = (time - min(time)) / 1e3) # time in sec.
+ggplot(raw13.long, aes(ts, pos, col = coord)) + geom_point()
+
+ggplot(raw13.long, aes(ts, pos, col = coord)) + geom_line() + facet_wrap(~block)
+
+sac13 <- file13data$sac
+sac13
+
+Sac13 <- cbind(sac13$stime, sac13$etime) # Define a set of intervals with these endpoints
+# See also: intervals package
+raw13 <- mutate(raw13, saccade = time %In% Sac13)
+raw13
+
+mean(raw13$saccade) * 100
+
+mutate(raw13.long, saccade = time %In% Sac13) %>%
+  filter(block == 1) %>%
+  ggplot(aes(ts, pos, group = coord, col = saccade)) + geom_line()
+
+
+
+fix13 <- file13data$fix
+fix13
+
+Fix13 <- cbind(fix13$stime, fix13$etime) # Define a set of intervals
+mutate(raw13.long, fixation = time %In% Fix13) %>%
+  filter(block == 1) %>%
+  ggplot(aes(ts, pos, group = coord, col = fixation)) + geom_line()
+
+
+mutate(raw13, fix.index = whichInterval(time, Fix13))
+
+raw13 <- mutate(raw13, fix.index = whichInterval(time, Fix13))
+fix.check <- filter(raw13, !is.na(fix.index)) %>%
+  group_by(fix.index) %>%
+  summarise(axp = mean(xp), ayp = mean(yp)) %>%
+  ungroup
+fix.check
+
+
+file13data$blinks
+Blk13 <- cbind(file13data$blinks$stime, file13data$blinks$etime) # Define a set of intervals
+
+head(filter(file13data$raw, time %In% Blk13))
+
+
+
+file13data$msg
+
+
+
+
+# Get fixations/saccades for 1st block
+fix_b1 <- subset(file13data$fix,block == 1)
+sacc_b1 <- subset(file13data$sacc,block == 1)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file13data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file13data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 1") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+
+
+# Get fixations/saccades for 2nd block
+fix_b1 <- subset(file13data$fix,block == 2)
+sacc_b1 <- subset(file13data$sacc,block == 2)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file13data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file13data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 2") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+
+# Get fixations/saccades for 3rd block
+fix_b1 <- subset(file13data$fix,block == 3)
+sacc_b1 <- subset(file13data$sacc,block == 3)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file13data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file13data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 3") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+
+# Get fixations/saccades for 4th block
+fix_b1 <- subset(file13data$fix,block == 4)
+sacc_b1 <- subset(file13data$sacc,block == 4)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file13data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file13data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 4") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+# Get fixations/saccades for 5th block
+fix_b1 <- subset(file13data$fix,block == 5)
+sacc_b1 <- subset(file13data$sacc,block == 5)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file13data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file13data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 5") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+# Get fixations/saccades for 6th block
+fix_b1 <- subset(file13data$fix,block == 6)
+sacc_b1 <- subset(file13data$sacc,block == 6)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file13data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file13data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 6") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+# Get fixations/saccades for 6th block
+fix_b1 <- subset(file13data$fix,block == 7)
+sacc_b1 <- subset(file13data$sacc,block == 7)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file13data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file13data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 7") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+raw_b1 <- subset(file13data$raw, block == 1)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file13data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file13data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 1") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+raw_b1 <- subset(file13data$raw, block == 2)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file13data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file13data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 2") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+raw_b1 <- subset(file13data$raw, block == 3)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file13data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file13data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 3") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+raw_b1 <- subset(file13data$raw, block == 4)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file13data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file13data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 4") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+raw_b1 <- subset(file13data$raw, block == 5)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file13data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file13data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 5") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+raw_b1 <- subset(file13data$raw, block == 6)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file13data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file13data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 6") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+raw_b1 <- subset(file13data$raw, block == 7)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file13data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file13data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 7") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+```
+
+
+
+**participant 15 Data**
+
+```{r}
+file15data <- read.asc("S15_110266.asc")
+file15data
+
+
+str(file15data, max.level = 1)
+dplyr::select(file15data$info, c(left, right, mono, screen.x, screen.y))
+
+
+raw15 <- file15data$raw
+raw15
+
+
+raw15.long <- dplyr::select(raw15, time, xp, yp, block) %>% tidyr::gather("coord", "pos", xp, yp)
+raw15.long
+
+
+raw15.long <- mutate(raw15.long, ts = (time - min(time)) / 1e3) # time in sec.
+ggplot(raw15.long, aes(ts, pos, col = coord)) + geom_point()
+
+ggplot(raw15.long, aes(ts, pos, col = coord)) + geom_line() + facet_wrap(~block)
+
+sac15 <- file15data$sac
+sac15
+
+Sac15 <- cbind(sac15$stime, sac15$etime) # Define a set of intervals with these endpoints
+# See also: intervals package
+raw15 <- mutate(raw15, saccade = time %In% Sac15)
+raw15
+mean(raw15$saccade) * 100
+
+mutate(raw15.long, saccade = time %In% Sac15) %>%
+  filter(block == 1) %>%
+  ggplot(aes(ts, pos, group = coord, col = saccade)) + geom_line()
+
+fix15 <- file15data$fix
+fix15
+
+Fix15 <- cbind(fix15$stime, fix15$etime) # Define a set of intervals
+mutate(raw15.long, fixation = time %In% Fix15) %>%
+  filter(block == 1) %>%
+  ggplot(aes(ts, pos, group = coord, col = fixation)) + geom_line()
+
+mutate(raw15, fix.index = whichInterval(time, Fix15))
+
+raw15 <- mutate(raw15, fix.index = whichInterval(time, Fix15))
+fix.check <- filter(raw15, !is.na(fix.index)) %>%
+  group_by(fix.index) %>%
+  summarise(axp = mean(xp), ayp = mean(yp)) %>%
+  ungroup
+fix.check
+
+
+
+
+
+
+file15data$blinks
+Blk15 <- cbind(file15data$blinks$stime, file15data$blinks$etime) # Define a set of intervals
+
+head(filter(file15data$raw, time %In% Blk15))
+
+
+
+
+
+file15data$msg
+
+
+
+# Get fixations/saccades for 1st block
+fix_b1 <- subset(file15data$fix,block == 1)
+sacc_b1 <- subset(file15data$sacc,block == 1)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file15data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file15data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 1") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+
+
+# Get fixations/saccades for 2nd block
+fix_b1 <- subset(file15data$fix,block == 2)
+sacc_b1 <- subset(file15data$sacc,block == 2)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file15data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file15data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 2") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+# Get fixations/saccades for 3rd block
+fix_b1 <- subset(file15data$fix,block == 3)
+sacc_b1 <- subset(file15data$sacc,block == 3)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file15data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file15data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 3") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+# Get fixations/saccades for 4th block
+fix_b1 <- subset(file15data$fix,block == 4)
+sacc_b1 <- subset(file15data$sacc,block == 4)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file15data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file15data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 4") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+
+
+# Get fixations/saccades for 5th block
+fix_b1 <- subset(file15data$fix,block == 5)
+sacc_b1 <- subset(file15data$sacc,block == 5)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file15data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file15data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 5") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+# Get fixations/saccades for 6th block
+fix_b1 <- subset(file15data$fix,block == 6)
+sacc_b1 <- subset(file15data$sacc,block == 6)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file15data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file15data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 6") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+
+# Get fixations/saccades for 7th block
+fix_b1 <- subset(file15data$fix,block == 7)
+sacc_b1 <- subset(file15data$sacc,block == 7)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file15data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file15data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 7") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+
+# Get fixations/saccades for 8th block
+fix_b1 <- subset(file15data$fix,block == 8)
+sacc_b1 <- subset(file15data$sacc,block == 8)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file15data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file15data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 8") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+#**Plotting of raw gazes for each block**
+  
+  
+
+raw_b1 <- subset(file15data$raw, block == 1)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file15data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file15data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 1") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+raw_b1 <- subset(file15data$raw, block == 2)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file15data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file15data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 2") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+raw_b1 <- subset(file15data$raw, block == 3)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file15data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file15data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 3") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+raw_b1 <- subset(file15data$raw, block == 4)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file15data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file15data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 4") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+raw_b1 <- subset(file15data$raw, block == 5)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file15data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file15data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 5") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+raw_b1 <- subset(file15data$raw, block == 6)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file15data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file15data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 6") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+  
+
+raw_b1 <- subset(file15data$raw, block == 7)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file15data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file15data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 7") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+
+
+
+
+
+raw_b1 <- subset(file15data$raw, block == 8)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file15data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file15data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 8") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+```
+
+
+**participant 16 Data**
+
+```{r}
+file16data <- read.asc("S16_106228.asc")
+file16data
+
+
+str(file16data, max.level = 1)
+dplyr::select(file16data$info, c(left, right, mono, screen.x, screen.y))
+
+
+raw16 <- file16data$raw
+raw16
+
+
+raw16.long <- dplyr::select(raw16, time, xp, yp, block) %>% tidyr::gather("coord", "pos", xp, yp)
+raw16.long
+
+
+raw16.long <- mutate(raw16.long, ts = (time - min(time)) / 1e3) # time in sec.
+ggplot(raw16.long, aes(ts, pos, col = coord)) + geom_point()
+
+ggplot(raw16.long, aes(ts, pos, col = coord)) + geom_line() + facet_wrap(~block)
+
+
+
+
+sac16 <- file16data$sac
+sac16
+
+
+
+Sac16 <- cbind(sac16$stime, sac16$etime) # Define a set of intervals with these endpoints
+# See also: intervals package
+raw16 <- mutate(raw16, saccade = time %In% Sac16)
+raw16
+
+
+
+mean(raw16$saccade) * 100
+
+
+mutate(raw16.long, saccade = time %In% Sac16) %>%
+  filter(block == 1) %>%
+  ggplot(aes(ts, pos, group = coord, col = saccade)) + geom_line()
+
+
+
+
+fix16 <- file16data$fix
+fix16
+
+Fix16 <- cbind(fix16$stime, fix16$etime) # Define a set of intervals
+mutate(raw16.long, fixation = time %In% Fix16) %>%
+  filter(block == 1) %>%
+  ggplot(aes(ts, pos, group = coord, col = fixation)) + geom_line()
+
+
+
+
+
+
+
+
+
+
+mutate(raw16, fix.index = whichInterval(time, Fix16))
+
+raw16 <- mutate(raw16, fix.index = whichInterval(time, Fix16))
+fix.check <- filter(raw16, !is.na(fix.index)) %>%
+  group_by(fix.index) %>%
+  summarise(axp = mean(xp), ayp = mean(yp)) %>%
+  ungroup
+fix.check
+
+file16data$blinks
+Blk16 <- cbind(file16data$blinks$stime, file16data$blinks$etime) # Define a set of intervals
+
+head(filter(file16data$raw, time %In% Blk16))
+
+
+file16data$msg
+
+
+
+# Get fixations/saccades for 1st block
+fix_b1 <- subset(file16data$fix,block == 1)
+sacc_b1 <- subset(file16data$sacc,block == 1)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file16data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file16data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 1") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+# Get fixations/saccades for 2nd block
+fix_b1 <- subset(file16data$fix,block == 2)
+sacc_b1 <- subset(file16data$sacc,block == 2)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file16data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file16data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 2") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+
+
+# Get fixations/saccades for 3rd block
+fix_b1 <- subset(file16data$fix,block == 3)
+sacc_b1 <- subset(file16data$sacc,block == 3)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file16data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file16data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 3") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+# Get fixations/saccades for 4th block
+fix_b1 <- subset(file16data$fix,block == 4)
+sacc_b1 <- subset(file16data$sacc,block == 4)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file16data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file16data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 4") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+# Get fixations/saccades for 5th block
+fix_b1 <- subset(file16data$fix,block == 5)
+sacc_b1 <- subset(file16data$sacc,block == 5)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file16data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file16data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 5") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+# Get fixations/saccades for 6th block
+fix_b1 <- subset(file16data$fix,block == 6)
+sacc_b1 <- subset(file16data$sacc,block == 6)
+
+# Actually plot fixations and saccades
+ggplot() +
+  geom_segment(data = sacc_b1,
+    aes(x = sxp, y = syp, xend = exp, yend = eyp),
+    arrow = arrow(), size = 1, alpha = 0.5, color = "grey40"
+  ) +
+  geom_point(data = fix_b1,
+      aes(x = axp, y = ayp, size = dur, color = eye),
+      alpha = 0.5, color = "blue"
+  ) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file16data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file16data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="pattern of Fixation & Saccades for block 6") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+
+#**Plotting of raw gazes for each block**
+
+
+raw_b1 <- subset(file16data$raw, block == 1)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file16data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file16data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 1") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+raw_b1 <- subset(file16data$raw, block == 2)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file16data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file16data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 2") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+
+raw_b1 <- subset(file16data$raw, block == 3)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file16data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file16data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 3") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+raw_b1 <- subset(file16data$raw, block == 4)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file16data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file16data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 4") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+raw_b1 <- subset(file16data$raw, block == 5)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file16data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file16data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 5") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+raw_b1 <- subset(file16data$raw, block == 6)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file16data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file16data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 6") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+
+raw_b1 <- subset(file16data$raw, block == 7)
+
+ggplot() +
+  geom_path(data = raw_b1, aes(x = xp, y = yp), size = 0.5, color = "firebrick2") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, file16data$info$screen.x)) +
+  scale_y_reverse(expand = c(0, 0), limits = c(file16data$info$screen.y, 0)) +
+  labs(x = "x-axis (pixels)", y = "y-axis (pixels)",title="Raw Gazes for Block 7") +
+  coord_fixed() # Keeps aspect ratio from getting distorted
+
+
+```
+
+
+End of available raw data for all participants. 
+
+
+**ALL Messages**
+
+using stringr r package function str_detect to select the only rows containing the string “#” that refers to the stimuli file
+
+```{r}
+  
+filter(file1data$msg, str_detect(text, "0214"))
+filter(file3data$msg, str_detect(text, "0214"))
+filter(file4data$msg, str_detect(text, "0214"))
+filter(file6data$msg, str_detect(text, "0214"))
+filter(file7data$msg, str_detect(text, "0214"))
+filter(file8data$msg, str_detect(text, "0214"))
+filter(file9data$msg, str_detect(text, "0214"))
+filter(file10data$msg, str_detect(text, "0214"))
+filter(file11data$msg, str_detect(text, "0214"))
+filter(file12data$msg, str_detect(text, "0214"))
+filter(file13data$msg, str_detect(text, "0214"))
+filter(file15data$msg, str_detect(text, "0214"))
+filter(file16data$msg, str_detect(text, "0214"))
+
+filter(file10data$blinks,str_detect(text,))
+
+
+
+
+filter(file1data$msg, str_detect(text, "0016"))
+filter(file3data$msg, str_detect(text, "0016"))
+filter(file4data$msg, str_detect(text, "0016"))
+filter(file6data$msg, str_detect(text, "0016"))
+filter(file7data$msg, str_detect(text, "0016"))
+filter(file8data$msg, str_detect(text, "0016"))
+filter(file9data$msg, str_detect(text, "0016"))
+filter(file10data$msg, str_detect(text, "0016"))
+filter(file11data$msg, str_detect(text, "0016"))
+filter(file12data$msg, str_detect(text, "0016"))
+filter(file13data$msg, str_detect(text, "0016"))
+filter(file15data$msg, str_detect(text, "0016"))
+filter(file16data$msg, str_detect(text, "0016"))
+
+
+
+filter(file1data$msg, str_detect(text, "0248"))
+filter(file3data$msg, str_detect(text, "0248"))
+filter(file4data$msg, str_detect(text, "0248"))
+filter(file6data$msg, str_detect(text, "0248"))
+filter(file7data$msg, str_detect(text, "0248"))
+filter(file8data$msg, str_detect(text, "0248"))
+filter(file9data$msg, str_detect(text, "0248"))
+filter(file10data$msg, str_detect(text, "0248"))
+filter(file11data$msg, str_detect(text, "0248"))
+filter(file12data$msg, str_detect(text, "0248"))
+filter(file13data$msg, str_detect(text, "0248"))
+filter(file15data$msg, str_detect(text, "0248"))
+filter(file16data$msg, str_detect(text, "0248"))
+
+
+
+filter(file1data$msg, str_detect(text, "0190"))
+filter(file3data$msg, str_detect(text, "0190"))
+filter(file4data$msg, str_detect(text, "0190"))
+filter(file6data$msg, str_detect(text, "0190"))
+filter(file7data$msg, str_detect(text, "0190"))
+filter(file8data$msg, str_detect(text, "0190"))
+filter(file9data$msg, str_detect(text, "0190"))
+filter(file10data$msg, str_detect(text, "0190"))
+filter(file11data$msg, str_detect(text, "0190"))
+filter(file12data$msg, str_detect(text, "0190"))
+filter(file13data$msg, str_detect(text, "0190"))
+filter(file15data$msg, str_detect(text, "0190"))
+filter(file16data$msg, str_detect(text, "0190"))
+
+
+
+filter(file1data$msg, str_detect(text, "0131"))
+filter(file3data$msg, str_detect(text, "0131"))
+filter(file4data$msg, str_detect(text, "0131"))
+filter(file6data$msg, str_detect(text, "0131"))
+filter(file7data$msg, str_detect(text, "0131"))
+filter(file8data$msg, str_detect(text, "0131"))
+filter(file9data$msg, str_detect(text, "0131"))
+filter(file10data$msg, str_detect(text, "0131"))
+filter(file11data$msg, str_detect(text, "0131"))
+filter(file12data$msg, str_detect(text, "0131"))
+filter(file13data$msg, str_detect(text, "0131"))
+filter(file15data$msg, str_detect(text, "0131"))
+filter(file16data$msg, str_detect(text, "0131"))
+
+
+filter(file1data$msg, str_detect(text, "0186"))
+filter(file3data$msg, str_detect(text, "0186"))
+filter(file4data$msg, str_detect(text, "0186"))
+filter(file6data$msg, str_detect(text, "0186"))
+filter(file7data$msg, str_detect(text, "0186"))
+filter(file8data$msg, str_detect(text, "0186"))
+filter(file9data$msg, str_detect(text, "0186"))
+filter(file10data$msg, str_detect(text, "0186"))
+filter(file11data$msg, str_detect(text, "0186"))
+filter(file12data$msg, str_detect(text, "0186"))
+filter(file13data$msg, str_detect(text, "0186"))
+filter(file15data$msg, str_detect(text, "0186"))
+filter(file16data$msg, str_detect(text, "0186"))
+
+
+
+filter(file1data$msg, str_detect(text, "0010"))
+filter(file3data$msg, str_detect(text, "0010"))
+filter(file4data$msg, str_detect(text, "0010"))
+filter(file6data$msg, str_detect(text, "0010"))
+filter(file7data$msg, str_detect(text, "0010"))
+filter(file8data$msg, str_detect(text, "0010"))
+filter(file9data$msg, str_detect(text, "0010"))
+filter(file10data$msg, str_detect(text, "0010"))
+filter(file11data$msg, str_detect(text, "0010"))
+filter(file12data$msg, str_detect(text, "0010"))
+filter(file13data$msg, str_detect(text, "0010"))
+filter(file15data$msg, str_detect(text, "0010"))
+filter(file16data$msg, str_detect(text, "0010"))
+
+
+filter(file1data$msg, str_detect(text, "0049"))
+filter(file3data$msg, str_detect(text, "0049"))
+filter(file4data$msg, str_detect(text, "0049"))
+filter(file6data$msg, str_detect(text, "0049"))
+filter(file7data$msg, str_detect(text, "0049"))
+filter(file8data$msg, str_detect(text, "0049"))
+filter(file9data$msg, str_detect(text, "0049"))
+filter(file10data$msg, str_detect(text, "0049"))
+filter(file11data$msg, str_detect(text, "0049"))
+filter(file12data$msg, str_detect(text, "0049"))
+filter(file13data$msg, str_detect(text, "0049"))
+filter(file15data$msg, str_detect(text, "0049"))
+filter(file16data$msg, str_detect(text, "0049"))
+
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
