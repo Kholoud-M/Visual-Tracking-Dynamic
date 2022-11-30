@@ -10,12 +10,16 @@ it is possible to accurately predict where a person will look in a scene and whe
 Although these models have had a great deal of success, the majority of work in this area has focused on describing
 visual attention to simplified stimuli: static images or videos with still cameras. In everyday life, on the other hand,
 our bodies are constantly moving and we direct our visual attention in the presence of large, global translations and 
-rotations of the entire visual scene (Koenderink, 1986). 
+rotations of the entire visual scene (Koenderink, 1986). Our central hypothesis is that, when visual stimuli are highly dynamic, 
+gaze behavior shifts from being a series of fixations to static objects and instead to a series of smooth-pursuit movements where 
+subjects track objects in the presence of global motion. Here we will use a research-grade, non-contact eye-tracker to monitor subject’s 
+eye position,head position, and pupil size, while subjects view dynamic visual stimuli.The focus of this project is on developing new 
+data analysis and computational models of eye movements of healthy participants. By examining what stimulus features affect where the subjects look,
+and comparing eye movement during stimuli with and without global motion, we will gain insight into processes underlying visual attention. 
 
 # Stimuli
-280 natural movies taken from 4 documentaries (Home, Earth, Salt-fat-acid-heat, Urbanized)
-And the middle frame from each clip is played as a static non moving image for the same amount of time. 
-Stored in Stimuli_Sep2019
+280 natural movies taken from 4 documentaries and the middle frame from each clip is played as a static non moving image for the same amount of time. 
+
 
 
 
