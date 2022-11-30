@@ -20,6 +20,13 @@ and comparing eye movement during stimuli with and without global motion, we wil
 # Stimuli
 280 natural movies taken from 4 documentaries and the middle frame from each clip is played as a static non moving image for the same amount of time. 
 
-
+# Data Analysis
+Gaze data will be acquired at 250-500Hz and we will analyze how features of the stimulus affect
+subject eye movements moment to moment. Data from each subject will be examined separately,
+and the primary analysis will be in comparing eye movements for different types of stimuli (e.g.
+global motion of different amplitudes). In particular, we will correlate (using nonlinear
+regression) features of eye movement (e.g. speed, direction, and fixations) with stimulus features
+(e.g. color, contrast, direction/strength of optic flow, and object locations). These relationships
+will allow us to characterize how visual attention varies with global motion.
 
 
